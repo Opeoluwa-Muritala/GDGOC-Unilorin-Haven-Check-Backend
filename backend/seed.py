@@ -2,10 +2,23 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy import inspect, text
+
 from db import Base, engine, session_scope
-from models import AreaPriceAverage, Hostel, ScamTranscript, UtilityReport
+from models import AreaPriceAverage, ChatMessage, Hostel, ScamTranscript, UtilityReport
 
 DATA_DIR = Path(__file__).parent / "seed_data"
+
+HOSTEL_COLUMN_MIGRATIONS = {
+    "is_school_managed": "BOOLEAN NOT NULL DEFAULT FALSE",
+    "scam_risk_level": "VARCHAR NULL",
+}
+SERIAL_TABLES = (
+    "area_price_averages",
+    "utility_reports",
+    "scam_transcripts",
+    "chat_messages",
+)
 
 
 def load(name: str) -> list[dict]:
@@ -16,9 +29,47 @@ def load(name: str) -> list[dict]:
     return value
 
 
+def migrate():
+    existing_columns = {
+        column["name"] for column in inspect(engine).get_columns("hostels")
+    }
+    missing_columns = {
+        name: definition
+        for name, definition in HOSTEL_COLUMN_MIGRATIONS.items()
+        if name not in existing_columns
+    }
+    if not missing_columns:
+        return
+
+    with engine.begin() as connection:
+        for name, definition in missing_columns.items():
+            connection.execute(
+                text(f"ALTER TABLE hostels ADD COLUMN {name} {definition}")
+            )
+            print(f"Added hostels.{name}.")
+
+
+def sync_postgres_sequences(db):
+    if db.bind.dialect.name != "postgresql":
+        return
+
+    for table_name in SERIAL_TABLES:
+        db.execute(
+            text(
+                "SELECT setval("
+                f"pg_get_serial_sequence('{table_name}', 'id'), "
+                "COALESCE(MAX(id), 1), "
+                "MAX(id) IS NOT NULL"
+                f") FROM {table_name}"
+            )
+        )
+
+
 def seed():
     Base.metadata.create_all(bind=engine)
+    migrate()
     with session_scope() as db:
+        db.query(ChatMessage).delete()
         db.query(UtilityReport).delete()
         db.query(ScamTranscript).delete()
         db.query(Hostel).delete()
@@ -35,6 +86,8 @@ def seed():
             db.add(UtilityReport(**row))
         for row in load("scam_transcripts.json"):
             db.add(ScamTranscript(**row))
+        db.flush()
+        sync_postgres_sequences(db)
     print("Seed data loaded successfully.")
 
 

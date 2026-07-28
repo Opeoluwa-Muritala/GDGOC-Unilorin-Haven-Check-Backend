@@ -14,10 +14,74 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 # Edit .env, then:
 python seed.py
-uvicorn main:app --reload
+uvicorn app:app --reload
 ```
 
 Open `http://127.0.0.1:8000/docs` for interactive API docs. For PostgreSQL, create the database and either run `psql "$DATABASE_URL" -f schema.sql` or let SQLAlchemy create the tables when the app/seed script starts.
+
+## Render deployment setup
+
+This backend can run on Render as a Python web service.
+
+### What Render needs
+
+- Python runtime: 3.11
+- Build command:
+
+```bash
+pip install -r requirements.txt
+```
+
+- Start command:
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port $PORT
+```
+
+- Health check path: `/health`
+
+### Environment variables to set in Render
+
+Set these in the Render dashboard under the service’s Environment tab (do not rely on `.env` files on Render):
+
+```text
+GEMMA_API_KEY=your-gemma-api-key
+DATABASE_URL=postgresql://user:password@host:5432/database
+RESEND_API_KEY=your-resend-api-key
+AUTHORITY_EMAIL_TO=authority@example.com
+SECURITY_EMAIL_TO=security@example.com
+RESEND_FROM_EMAIL=Housing Scout <alerts@yourdomain.com>  # optional, but recommended for live mail
+GEMMA_MODEL=gemma-3-27b-it  # optional override
+GROQ_API_KEY=your-groq-api-key
+TTS_PROVIDER=easyvoice
+EASYVOICE_API_KEY=your-easyvoice-api-key
+EASYVOICE_API_URL=https://easyvoice.ae/api/v1/audio/speech
+EASYVOICE_MODEL=kokoro-82m
+EASYVOICE_VOICE=af_aoede
+ELEVENLABS_API_KEY=your-elevenlabs-api-key
+ELEVENLABS_VOICE_ID=your-premade-voice-id
+```
+
+### Render setup steps
+
+1. Create a new Render Web Service and connect this repository.
+2. Set the root directory to `backend`.
+3. Choose Python 3.11 as the runtime.
+4. Use the build command above and the start command above.
+5. Add the environment variables listed above.
+6. Deploy the service.
+
+### Database notes
+
+- Render’s PostgreSQL service is the best option for production-style deployments.
+- The app will create tables automatically on startup when `DATABASE_URL` points to a reachable PostgreSQL database.
+- If you want the seeded demo data to exist immediately, run `python seed.py` once after deployment (for example from a Render shell session or a one-off job).
+
+### Important notes
+
+- The app uses `load_dotenv()` locally, but on Render you must configure environment variables in the Render dashboard or via `render.yaml`.
+- The `/agent` endpoint requires a valid `GEMMA_API_KEY`; otherwise the API will respond with a graceful AI-service error.
+- Email features only work if `RESEND_API_KEY` is configured and the recipient inboxes are valid.
 
 ## Stable response contract
 
@@ -76,12 +140,62 @@ curl -X POST http://127.0.0.1:8000/hostels/hostel-tanke-01/reports -H "Content-T
 Ask the agent:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/agent -H "Content-Type: application/json" -d '{"message":"Is 150k for a room in Tanke fair?"}'
-curl -X POST http://127.0.0.1:8000/agent -H "Content-Type: application/json" -d '{"message":"Has hostel-tanke-01 had water problems?"}'
-curl -X POST http://127.0.0.1:8000/agent -H "Content-Type: application/json" -d '{"message":"Is this a scam: Pay now before viewing, address later, today only!"}'
+curl -X POST http://127.0.0.1:8000/agent -H "Content-Type: application/json" -d '{"message":"Is 150k for a room in Tanke fair?","sessionId":"browser-session-123"}'
+curl -X POST http://127.0.0.1:8000/agent -H "Content-Type: application/json" -d '{"message":"Has this hostel had water problems?","sessionId":"browser-session-123","hostelId":"hostel-tanke-01"}'
+curl -X POST http://127.0.0.1:8000/agent -H "Content-Type: application/json" -d '{"message":"Is this a scam: Pay now before viewing, address later, today only!","sessionId":"browser-session-123"}'
 ```
 
 Run all three agent samples with `python test_agent.py`, optionally passing a base URL.
+
+Restore session-scoped chat history:
+
+```bash
+curl "http://127.0.0.1:8000/chat/history?sessionId=browser-session-123"
+curl "http://127.0.0.1:8000/chat/history?sessionId=browser-session-123&hostelId=hostel-tanke-01"
+```
+
+`sessionId` is mandatory for both `/agent` and `/chat/history`. History
+queries always filter by that ID and never return messages from other
+sessions.
+
+Transcribe a browser recording with Groq:
+
+```bash
+curl -X POST http://127.0.0.1:8000/voice/transcribe \
+  -F "audio=@recording.webm"
+```
+
+Run the complete voice-chat pipeline in one backend request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/voice/chat \
+  -F "audio=@recording.webm" \
+  -F "sessionId=browser-session-123" \
+  -F "hostelId=hostel-tanke-01" \
+  -F "speakReply=true"
+```
+
+The JSON response includes `transcript`, `reply`, tool-call details, and an
+optional base64-encoded MP3 in `audioBase64`. Set `speakReply=false` for
+text-only output. Transcription and chat failures return clear errors; a TTS
+failure leaves the text reply intact and sets `voiceError`.
+
+Generate MP3 speech with the currently selected provider:
+
+```bash
+curl -X POST http://127.0.0.1:8000/voice/speak \
+  -H "Content-Type: application/json" \
+  -d '{"text":"This hostel is within the normal price range."}' \
+  --output speech.mp3
+```
+
+Test EasyVoice independently by setting `TTS_PROVIDER=easyvoice`, restarting
+the API, and running the `/voice/speak` curl command. Test ElevenLabs with
+`TTS_PROVIDER=elevenlabs` and the same command. Both return `audio/mpeg`, so
+clients do not need provider-specific handling.
+
+Switch TTS provider anytime via TTS_PROVIDER in .env — no code changes
+needed. Use easyvoice or elevenlabs depending on which has remaining credits.
 
 ## Seed data contract
 

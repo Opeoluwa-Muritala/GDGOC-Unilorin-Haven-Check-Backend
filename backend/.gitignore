@@ -1,4 +1,6 @@
 .env
+.env.local
+HAVENCHECK_ENGINEERING_GUIDE.local.md
 .venv/
 __pycache__/
 *.py[cod]

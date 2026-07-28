@@ -185,6 +185,11 @@ def hostel_dict(hostel: Hostel, include_reports: bool = False) -> dict:
     return data
 
 
+@app.get("/", response_model=ApiResponse)
+def root():
+    return response("Welcome to the Housing Scout API. Access /docs for API documentation.", {"status": "ok"})
+
+
 @app.get("/health", response_model=ApiResponse)
 def health():
     return response("API is healthy", {"status": "ok"})
